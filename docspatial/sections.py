@@ -1,14 +1,12 @@
-# section_detection.py
+# sections.py
 import string
 from collections import defaultdict
 from copy import deepcopy
 
-import cv2
 import numpy as np
 import PIL
-from sklearn.cluster import DBSCAN
 
-from . import geometry, live_ocr, ocr
+from . import geometry, live_ocr
 
 
 def extract_lines_from_ocr(words, vertical_tolerance_factor=0.8, straight_words=False):
@@ -79,32 +77,6 @@ def is_similar_font(f1, f2):
     if abs(f1["font_size"] - f2["font_size"]) > 0.1 * f1["font_size"]:
         return False
     return True
-
-
-def split_long_spans(span):
-    # Split a long span into smaller spans based on the presence of ':' or '-'
-    # And looking backword to see if the previous span is part of the key, or can be separated
-    parts = span["span_text"].split()
-    span_list = []
-    last_span = parts[-1]
-    last_2span = " ".join(parts[-2:])
-    # remove punctuation from the last span
-    last_span = last_span.strip(string.punctuation)
-    last_2span = last_2span.strip(string.punctuation)
-    if last_span.lower() in [
-        "contact",
-        "pan",
-        "fax",
-        "email",
-        "gstin",
-        "gstinuid",
-        "state",
-        "ph",
-        "phone",
-    ]:
-        span_list.append({"span_text": last_span, "vertices": span["vertices"]})
-        span_list.append({"span_text": parts[-2], "vertices": span["vertices"]})
-    # elif last_2span.lower() in ['contact person', 'contact no', 'contact number', 'contact details', 'contact details:', 'contact details :', 'contact no:', 'contact no :', 'contact number:', 'contact numbe
 
 
 def merge_spans(spans, text=None):
@@ -289,95 +261,68 @@ def map_neighbors_new(blocks, threshold_base=3.0):
     return blocks
 
 
-def get_page_ocr_grouped_spans(ocr_pkl_path, page_number=0, threshold_base=3.0):
-    ocr_json = ocr.get_ocr_json(ocr_pkl_path)
+def _font_metadata_from_words(words):
+    """Derive font metrics for a block from the word boxes inside it.
 
-    key_names = ocr.get_ocr_json_key_names(ocr_json)
-    fta_key = key_names["fta"]
-    bbox_key = key_names["quad"]
+    The original pipeline read these from Google Vision's per-symbol
+    bounding boxes. Reconstructed here from word geometry: size from the
+    median word height, width from the median per-character width.
+    """
+    heights = [w["rect"][3] - w["rect"][1] for w in words]
+    widths = [
+        (w["rect"][2] - w["rect"][0]) / max(1, len(w.get("text", ""))) for w in words
+    ]
+    return {
+        "font_style": None,
+        "font_size": float(np.median(heights)),
+        "font_width": float(np.median(widths)),
+        "bold": False,  # TODO: Add logic to detect bold
+        "italic": False,  # TODO: Add logic to detect italic
+    }
 
-    page_ocr = ocr_json[fta_key]["pages"][page_number]
-    new_blocks = []
-    new_paragraphs = []
-    new_spans = []
 
-    for b, block in enumerate(page_ocr["blocks"]):
-        block_text = ""
-        block_paras = []
-        for paragraph in block["paragraphs"]:
-            paragraph_text = ""
-            paragraph_spans = []
-            font_width_calculator = []
-            font_height_calculator = []
-            another_para = False
-            prev_word_line = None
-            for word in paragraph["words"]:
-                if len(word["symbols"]) > 0:
-                    word_vertices = word[bbox_key]["vertices"]
-                    vertices = convert_xy_to_nparray(word_vertices)
-                    this_word = ""
-                    breaks = 0
-                    for symbol in word["symbols"]:
-                        this_word += symbol["text"]
-                        font_width_calculator.append(
-                            symbol[bbox_key]["vertices"][1]["x"]
-                            - symbol[bbox_key]["vertices"][0]["x"]
-                        )
-                        font_height_calculator.append(
-                            symbol[bbox_key]["vertices"][3]["y"]
-                            - symbol[bbox_key]["vertices"][0]["y"]
-                        )
-                        if "detected_break" in symbol.keys():
-                            breaks += 1
-                    font_metadata = {
-                        "font_style": None,
-                        "font_size": np.mean(font_height_calculator),
-                        "font_width": np.mean(font_width_calculator),
-                        "bold": False,  # TODO: Add logic to detect bold
-                        "italic": False,  # TODO: Add logic to detect italic
-                    }
-                    span = {
-                        "span_text": this_word,
-                        "vertices": vertices,
-                        "block_no": b,
-                        "font_metadata": font_metadata,
-                    }
-                    new_spans.append(span)
+def build_blocks_from_words(words, threshold_base=3.0):
+    """Reconstruct text blocks from words and map their directional neighbours.
 
-                    # Now check if this word actually belongs to the same paragraph, or is in the next line
-                    # If it is in the next line, break the paragraph
-                    if prev_word_line is None:
-                        prev_word_line = vertices[3][1]
-                    else:
-                        if vertices[3][1] > prev_word_line + font_metadata["font_size"]:
-                            another_para = True
-                            prev_word_line = vertices[3][1]
-                    if another_para:
-                        merged_paragraph_span = merge_spans(
-                            paragraph_spans, paragraph_text
-                        )
-                        new_paragraphs.append(merged_paragraph_span)
-                        block_text += paragraph_text + "\n"
-                        block_paras.append(merged_paragraph_span)
-                        paragraph_text = ""
-                        paragraph_spans = []
-                        another_para = False
+    The original took blocks from Google Vision's block/paragraph hierarchy,
+    which carried per-symbol font metrics with it. Without that hierarchy the
+    blocks are recovered geometrically: words are grouped into lines by
+    vertical band, each line becomes a block, and its font metrics come from
+    its own word boxes. Engine-agnostic, and needs nothing but text + quad.
 
-                    paragraph_spans.append(span)
-                    paragraph_text += this_word + " "
-            merged_paragraph_span = merge_spans(paragraph_spans, paragraph_text)
-            new_paragraphs.append(merged_paragraph_span)
-            block_text += paragraph_text + "\n"
-            block_paras.append(merged_paragraph_span)
-        merged_block_span = merge_spans(block_paras, block_text)
-        new_blocks.append(merged_block_span)
-    sorted_blocks = sort_blocks(new_blocks)
-    sorted_blocks = map_neighbors_new(sorted_blocks, threshold_base=threshold_base)
+    Words must have been through geometry.prepare_words().
 
-    sorted_blocks = convert_to_standard_format(sorted_blocks)
-    new_paragraphs = convert_to_standard_format(new_paragraphs)
-    new_spans = convert_to_standard_format(new_spans)
-    return sorted_blocks, new_paragraphs, new_spans
+    Returns blocks in standard section format, each carrying north/south/
+    east/west neighbour references as [distance, block_index].
+    """
+    remaining = geometry.sort_sections_as_document(list(words))
+
+    blocks = []
+    while remaining:
+        line = [remaining.pop(0)]
+        for word in remaining[:]:
+            if geometry.words_are_in_same_line(line[-1], word):
+                line.append(word)
+                remaining.remove(word)
+        line.sort(key=lambda w: w["quad"][0]["x"])
+
+        merged = geometry.merge_sections(line)
+        rect = geometry.quad_std_to_rect_std(merged["quad"])
+        blocks.append(
+            {
+                "span_text": merged["text"],
+                "raw_text": merged["text"],
+                # float, because the neighbour search writes nan/inf into these
+                "vertices": np.array(
+                    geometry.rect_std_to_quad_points_list(rect), dtype=float
+                ),
+                "font_metadata": _font_metadata_from_words(line),
+            }
+        )
+
+    blocks = sort_blocks(blocks)
+    blocks = map_neighbors_new(blocks, threshold_base=threshold_base)
+    return convert_to_standard_format(blocks)
 
 
 def convert_to_standard_format(sections):
@@ -393,6 +338,12 @@ def convert_to_standard_format(sections):
 def merge_sections__text_guided_visual_method(
     sections, image, words, lines, debug=False
 ):
+    """Cluster sections by text height, then merge each height band visually.
+
+    Requires scikit-learn and opencv (the 'viz' extra).
+    """
+    from sklearn.cluster import DBSCAN
+
     word_heights = [w["height"] for w in words]
     word_heights_ = np.array(word_heights).reshape(-1, 1)
 
@@ -525,9 +476,13 @@ def merge_sections__visual_method(
 ):
     """Visual method to merge sections
 
+    Requires opencv (the 'viz' extra).
+
     Line spacing is used to merge sections that are close to each other
     by doing a dilation on y axis and then finding connected components
     """
+    import cv2
+
     # PARAMETERS
     # a value of line spacing / 2 and iters 3
     # equals 1.5 times linespacing

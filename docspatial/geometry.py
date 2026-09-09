@@ -18,23 +18,32 @@ import copy
 import itertools
 import math
 
-import cv2
 import numpy as np
 import shapely
-import torch
-import torchvision
-from PIL import Image
 
 from . import utils
 
+# cv2 and PIL are only needed by the image-space helpers (rotation, cropping).
+# They are imported inside those functions so that the coordinate geometry —
+# which is the bulk of this module — works with numpy and shapely alone.
+
 
 def get_box_iou(rect1, rect2):
-    """Get the IoU of two rectangles"""
-    rect1 = torch.tensor([rect1], dtype=torch.float)
-    rect2 = torch.tensor([rect2], dtype=torch.float)
-    iou = torchvision.ops.boxes.box_iou(rect1, rect2)
+    """Get the IoU of two rectangles, each [left, top, right, bottom]"""
+    ax1, ay1, ax2, ay2 = rect1
+    bx1, by1, bx2, by2 = rect2
 
-    return float(iou.squeeze())
+    intersection_width = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    intersection_height = max(0.0, min(ay2, by2) - max(ay1, by1))
+    intersection = intersection_width * intersection_height
+
+    area1 = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area2 = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area1 + area2 - intersection
+
+    if not union:
+        return 0.0
+    return float(intersection / union)
 
 
 def quad_ocr_to_quad_std(vertices):
@@ -125,6 +134,44 @@ def get_centroid(quad):
     points = quad_std_to_quad_points_list(quad)
     centroid = np.mean(points, axis=0).tolist()
     return centroid
+
+
+def prepare_words(words):
+    """Derive the fields the spatial functions expect from bare word quads.
+
+    Input words need only ``text`` and ``quad`` — the format any OCR engine can
+    be adapted to. This fills in what the rest of the library reads:
+
+    - ``rect``, ``centroid``, ``height``, ``width`` — from the quad
+    - ``font_height`` — the word's bbox height, used to decide line membership
+    - ``rotation_angle`` — from the slope of the quad's top edge, which is what
+      makes the rotation-aware paths work on words that carry no angle
+    - ``id`` — position in reading order of the input list
+    - ``confidence`` — defaults to 1.0
+
+    Anything already present is left alone, so words from an engine that
+    reports its own angle or confidence keep those values.
+
+    Returns new dicts; the input list is not modified.
+    """
+    prepared = []
+    for idx, word in enumerate(words):
+        w = copy.deepcopy(word)
+        quad = w["quad"]
+
+        rect = quad_std_to_rect_std(quad)
+        w["rect"] = rect
+        w["centroid"] = get_centroid(quad)
+
+        w.setdefault("id", idx)
+        w.setdefault("height", rect[3] - rect[1])
+        w.setdefault("width", rect[2] - rect[0])
+        w.setdefault("font_height", rect[3] - rect[1])
+        w.setdefault("confidence", 1.0)
+        w.setdefault("rotation_angle", calculate_rotation_angle(quad[0], quad[1]))
+
+        prepared.append(w)
+    return prepared
 
 
 def get_median_height(sections):
@@ -241,6 +288,8 @@ def scale_section(section, image_size, x_scale_factor=1.0, y_scale_factor=1.0):
 
 
 def crop_section_from_image(image, section):
+    from PIL import Image
+
     left, top, right, bottom = quad_std_to_rect_std(section["quad"])
 
     pil_img = False
@@ -260,6 +309,17 @@ def crop_section_from_image(image, section):
 def calculate_rotation_angle(point1, point2, nearest_angle=None):
     """
     Calculate rotation angle given two points by computing the slope
+
+    NOTE ON SIGN — this returns the *negation* of the angle the rotate_*
+    functions take. It measures atan2(dy, dx) in image coordinates (y down),
+    while rotate_points_on_image follows OpenCV (positive counter-clockwise).
+
+    So to deskew, rotate by the measured angle itself, NOT by its negative:
+
+        angle = calculate_rotation_angle(word["quad"][0], word["quad"][1])
+        upright = rotate_sections_on_image(words, angle, image_size)
+
+    Passing -angle doubles the skew rather than removing it.
     """
     # Calculate the angle between the top edge and the horizontal axis
     dx = point2["x"] - point1["x"]
@@ -495,12 +555,31 @@ def get_polygon_iou(poly1, poly2) -> float:
     return iou_score
 
 
+def _rotation_matrix_2d(center, angle, scale=1.0):
+    """The 2x3 affine matrix that cv2.getRotationMatrix2D returns.
+
+    Angle in degrees, positive counter-clockwise, in image coordinates (y
+    increasing downward). Written out in numpy so that rotating *coordinates*
+    needs no opencv — only rotating *pixels* does.
+    """
+    center_x, center_y = center
+    angle_rad = np.deg2rad(angle)
+    alpha = scale * np.cos(angle_rad)
+    beta = scale * np.sin(angle_rad)
+    return np.array(
+        [
+            [alpha, beta, (1 - alpha) * center_x - beta * center_y],
+            [-beta, alpha, beta * center_x + (1 - alpha) * center_y],
+        ]
+    )
+
+
 def _get_rotation_matrix_preserve_image(angle, width, height):
     angle_rad = np.deg2rad(angle)
     final_w = int((height * abs(np.sin(angle_rad))) + (width * abs(np.cos(angle_rad))))
     final_h = int((height * abs(np.cos(angle_rad))) + (width * abs(np.sin(angle_rad))))
 
-    M = cv2.getRotationMatrix2D((width // 2, height // 2), angle, 1)
+    M = _rotation_matrix_2d((width // 2, height // 2), angle, 1)
     M[0, 2] += (final_w / 2) - width // 2
     M[1, 2] += (final_h / 2) - height // 2
     return M, final_w, final_h
@@ -508,6 +587,8 @@ def _get_rotation_matrix_preserve_image(angle, width, height):
 
 def rotate_image(img, angle):
     """Rotate an image, preserving full view of the image"""
+    import cv2
+    from PIL import Image
 
     is_np_img = True
     if not isinstance(img, np.ndarray):
@@ -542,9 +623,9 @@ def rotate_points_on_image(quad, angle, image_size):
 
     M, final_w, final_h = _get_rotation_matrix_preserve_image(angle, w, h)
 
-    points = np.array([[ii["x"], ii["y"]] for ii in quad])
-    points = np.expand_dims(points, axis=0)
-    rot_points = cv2.transform(points, M).squeeze()
+    points = np.array([[ii["x"], ii["y"]] for ii in quad], dtype=float)
+    points_homogeneous = np.hstack([points, np.ones((len(points), 1))])
+    rot_points = points_homogeneous @ M.T
     rot_quad = [{"x": int(ii[0]), "y": int(ii[1])} for ii in rot_points]
     return rot_quad
 

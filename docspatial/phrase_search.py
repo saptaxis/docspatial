@@ -1,4 +1,4 @@
-# find_in_ocr.py
+# phrase_search.py
 import copy
 import itertools
 import pprint
@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 
-from . import geometry, ocr, utils, text_utils
+from . import geometry, text, utils
 
 
 def get_unique_phrase_combinations(combinations):
@@ -64,7 +64,18 @@ def get_right_or_bottom_combinations(
     y_tolerance_fraction=(0.5, 2),
     debug=False,
 ):
-    """Filter phrase sequences where successive words are to the right or below"""
+    """Filter phrase sequences where successive words are to the right or below
+
+    NOTE — the y tolerance is deliberately asymmetric: (0.5, 2.0) means half a
+    text height upward but two downward, because in a document the next word is
+    either beside you or on the line below, never far above.
+
+    That asymmetry is tuned for upright text, and it is what bounds rotated
+    search to roughly +/- 5 degrees: text that *rises* to the right hits the
+    tight upper bound first. For skewed pages, deskew before searching (see
+    geometry.calculate_rotation_angle) rather than widening this — widening it
+    admits matches that run up the page.
+    """
 
     right_or_bottom_combinations = []
 
@@ -200,10 +211,9 @@ def find_successive_distance(point_list):
 
 
 # @utils.pass_by_value
-def find_phrase_in_ocr(
+def find_phrase(
     phrase,
-    ocr_pkl_path,
-    words=None,
+    words,
     read_as_document=True,
     same_line=False,
     case_insensitive=True,
@@ -231,10 +241,9 @@ def find_phrase_in_ocr(
     ----------
     phrase : str
         phrase to search for
-    ocr_pkl_path : str
-        local filepath to OCR pickle file
     words : list of dicts
-        if provided, then use these words instead of reading from OCR
+        word-level OCR output in standard format. Run through
+        geometry.prepare_words() first if the words carry only text + quad.
     read_as_document : bool
         if True, then only use phrases that go left-->right, top-->bottom within some thresholds
     same_line : bool
@@ -259,15 +268,9 @@ def find_phrase_in_ocr(
     if read_as_document and same_line:
         read_as_document = False
 
-    if words is None:
-        words = ocr.get_page_ocr_words(
-            ocr_pkl_path,
-            remove_punctuation=ignore_punctuation,
-        )
-    else:
-        # pass by value
-        # do not want to alter the original ref to words that come in
-        words = copy.deepcopy(words)
+    # pass by value
+    # do not want to alter the original ref to words that come in
+    words = copy.deepcopy(words)
 
     # fitler_section: find phrase within this section bbox
     # filter words to be within this section if passed
@@ -286,11 +289,11 @@ def find_phrase_in_ocr(
     if ignore_punctuation:
         # if punctuation is found in search phrase, replace with space
         # treat words before and after punctuation as 2 separate words
-        phrase = text_utils.filter_punctuation(phrase, replace_with=" ")
+        phrase = text.filter_punctuation(phrase, replace_with=" ")
         phrase = " ".join(phrase.split())
 
     # split phrase into words
-    words_in_phrase = text_utils.split_text_into_words(
+    words_in_phrase = text.split_text_into_words(
         phrase, split_punctuation=not ignore_punctuation
     )
     words_in_phrase = [ii.strip() for ii in words_in_phrase]
@@ -451,19 +454,12 @@ def find_phrase_in_ocr(
     return phrase_data
 
 
-def find_words_in_same_line_as_phrase(phrase, ocr_pkl_path, text_height_fraction=1.5):
+def find_words_in_same_line_as_phrase(phrase, words, text_height_fraction=1.5):
     """Find words in the same line as the given phrase
 
     Within a tolerance of median text height
     """
-    words = ocr.get_page_ocr_words(
-        ocr_pkl_path,
-        remove_punctuation=False,
-    )
-
-    phrase_data = find_phrase_in_ocr(
-        phrase, ocr_pkl_path, case_insensitive=True, same_line=True
-    )
+    phrase_data = find_phrase(phrase, words, case_insensitive=True, same_line=True)
     if not phrase_data:
         return []
 

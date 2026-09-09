@@ -1,4 +1,4 @@
-# layout_utils.py
+# layout.py
 
 """
 Utility functions written using layout semantics, OCR 
@@ -6,7 +6,7 @@ Utility functions written using layout semantics, OCR
 
 import numpy as np
 
-from . import find_in_ocr, geometry, ocr
+from . import geometry, phrase_search
 
 
 def get_section_to_anchor_directions(anchor_rect, kv_rect):
@@ -246,25 +246,26 @@ def get_n_next_word_extracted_data(words, phrase_data, n=1, numbers=False):
 
 
 def get_next_word_after_phrase(
-    phrase, ocr_path, ignore_punctuation=True, numbers=False, n=1
+    phrase, words, ignore_punctuation=True, numbers=False, n=1
 ):
+    """Find a phrase and return the extracted value that follows it.
+
+    The "label: value" workhorse — locate the label text, then take the next
+    word (or the next number) in reading order.
+    """
     extracted_data = {}
 
     if numbers:
         ignore_punctuation = False
 
-    all_phrase_data = find_in_ocr.find_phrase_in_ocr(
+    all_phrase_data = phrase_search.find_phrase(
         phrase,
-        ocr_path,
+        words,
         ignore_punctuation=ignore_punctuation,
         same_line=True,
         normalize_distance_to_height=True,
         distance_tolerance=0.1,
         return_all=True,
-    )
-    words = ocr.get_page_ocr_words(
-        ocr_path,
-        remove_punctuation=ignore_punctuation,
     )
 
     if len(all_phrase_data):

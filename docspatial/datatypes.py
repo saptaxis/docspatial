@@ -7,10 +7,10 @@ import dateparser
 import dateparser.search
 import dateutil
 import usaddress
-from assets import load_assets
 from nameparser import HumanName
 
-from . import lookup_assets, text_utils
+from . import assets, lookup_assets
+from . import text as text_utils
 
 
 class DataTypes(Enum):
@@ -671,11 +671,10 @@ class Date:
 
 class Address:
     def __init__(self):
-        self.countries_asset = load_assets.load("geoname_countries")
-        self.countries_list = self.countries_asset["Country"].str.lower().tolist()
+        self.countries = assets.load_countries()
 
     def is_address(self, text):
-        return is_address(text, countries_asset=self.countries_asset)
+        return is_address(text, countries=self.countries)
 
 
 def is_org(string):
@@ -767,7 +766,7 @@ def contains_address_street(text):
     return street_found
 
 
-def contains_address_country(text, countries_asset=None):
+def contains_address_country(text, countries=None):
     if isinstance(text, list):
         # list of words
         words = text
@@ -777,14 +776,13 @@ def contains_address_country(text, countries_asset=None):
     else:
         raise ValueError("text should be str or list of words")
 
-    if countries_asset is None:
-        countries_asset = load_assets.load("geoname_countries")
-    countries_list = countries_asset["Country"].str.lower().tolist()
-    contains_country = any([w.lower() in countries_list for w in words])
+    if countries is None:
+        countries = assets.load_countries()
+    contains_country = any([w.lower() in countries for w in words])
     return contains_country
 
 
-def is_address(text, countries_asset=None):
+def is_address(text, countries=None):
     # check if country exists
     # check if is street
     # postal code - NOT Done
@@ -796,7 +794,7 @@ def is_address(text, countries_asset=None):
         words = text.split()
     else:
         raise ValueError("text should be str or list of words")
-    has_country = contains_address_country(text, countries_asset=countries_asset)
+    has_country = contains_address_country(text, countries=countries)
     has_street = contains_address_street(text)
     return has_country and has_street
 

@@ -3,13 +3,12 @@ import string
 from difflib import SequenceMatcher
 
 import numpy as np
-import torch
-from nltk.util import ngrams
-from sentence_transformers.util import cos_sim
-from thefuzz import fuzz
-from thefuzz import process as thefuzz_process
 
-from models.embedding import TextEmbedding_MiniLM
+# Everything below is stdlib + numpy, except three functions that reach for
+# heavier libraries: get_most_dissimilar_text (sentence-transformers, torch),
+# find_string (nltk) and fuzzy_dedupe_list (thefuzz). Those import inside the
+# function, so the rest of the module — the number, ID and punctuation
+# classifiers that the spatial code actually calls — stays dependency-free.
 
 
 def deduplicate_sections_by_text(sections, threshold=0.9):
@@ -28,6 +27,10 @@ def deduplicate_sections_by_text(sections, threshold=0.9):
 
 
 def get_most_dissimilar_text(all_text, num_to_sample, return_idxs=True):
+    """Greedily sample the most mutually dissimilar texts by embedding distance.
+
+    Requires the optional 'embeddings' extra (sentence-transformers, torch).
+    """
     print(f"Find Dis-similar text: sampling {num_to_sample} from {len(all_text)}")
 
     if num_to_sample > len(all_text):
@@ -51,10 +54,14 @@ def get_most_dissimilar_text(all_text, num_to_sample, return_idxs=True):
             return [all_text[sample_idx]], [sample_idx]
         return [all_text[sample_idx]]
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    embed = TextEmbedding_MiniLM(device=device)
+    import torch
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.util import cos_sim
 
-    all_text_embeddings = embed.get_embedding(all_text)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    embed = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+
+    all_text_embeddings = embed.encode(all_text, convert_to_tensor=True)
     similarity_matrix = cos_sim(all_text_embeddings, all_text_embeddings)
 
     # start randomly from somewhere
@@ -251,7 +258,12 @@ def is_title_case(text):
 
 
 def find_string(string_, query, threshold=0.85, lower=False):
-    """Find query string on longer string"""
+    """Find query string on longer string
+
+    Requires the optional 'fuzzy' extra (nltk).
+    """
+    from nltk.util import ngrams
+
     if lower:
         string_ = string_.lower()
         query = query.lower()
@@ -295,7 +307,7 @@ def remove_trailing_punctuations_and_spaces(text):
 
 
 def remove_spaces_after_chars(text, chars=["-", "/"]):
-    pattern = f"({'|'.join(re.escape(char) for char in chars)})\s+"
+    pattern = rf"({'|'.join(re.escape(char) for char in chars)})\s+"
     return re.sub(pattern, r"\1", text)
 
 
@@ -337,7 +349,19 @@ def get_fuzzy_string_match(str1, str2):
     return match_score.ratio()
 
 
-def fuzzy_dedupe_list(contains_dupes, threshold=70, scorer=fuzz.token_set_ratio):
+def fuzzy_dedupe_list(contains_dupes, threshold=70, scorer=None):
+    """Collapse near-duplicate strings, keeping the longest of each cluster.
+
+    Requires the optional 'fuzzy' extra (thefuzz). ``scorer`` defaults to
+    thefuzz's token_set_ratio; it is resolved here rather than in the
+    signature so importing this module does not require thefuzz.
+    """
+    from thefuzz import fuzz
+    from thefuzz import process as thefuzz_process
+
+    if scorer is None:
+        scorer = fuzz.token_set_ratio
+
     extractor = []
 
     # iterate over items in *contains_dupes*

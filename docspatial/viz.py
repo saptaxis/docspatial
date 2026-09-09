@@ -1,10 +1,36 @@
 import numpy as np
 import PIL
-from models import geometry
-from models.image_utils import resize_image_keep_aspect
 from PIL import Image, ImageDraw, ImageFont
 
-from meta.utils import get_chunks
+from . import geometry
+
+
+def get_chunks(items, chunk_size, pad_value=None):
+    """Split a list into fixed-size chunks, padding the last one."""
+    chunks = []
+    for start in range(0, len(items), chunk_size):
+        chunk = list(items[start : start + chunk_size])
+        chunk += [pad_value] * (chunk_size - len(chunk))
+        chunks.append(chunk)
+    return chunks
+
+
+def resize_image_keep_aspect(image, size):
+    """Resize to fit within size (width, height), letterboxed onto a black canvas."""
+    target_w, target_h = size
+
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image)
+
+    source_w, source_h = image.size
+    scale = min(target_w / source_w, target_h / source_h)
+    new_size = (max(1, int(source_w * scale)), max(1, int(source_h * scale)))
+
+    resized = image.resize(new_size, Image.BILINEAR)
+
+    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+    canvas.paste(resized, ((target_w - new_size[0]) // 2, (target_h - new_size[1]) // 2))
+    return np.array(canvas)
 
 
 def visualize_images_in_grid(
@@ -99,7 +125,12 @@ def draw_field_on_image(
             v_text = (v1[0], v1[1] + 20)
         else:
             v_text = (v1[0], v1[1] - 20)
-        fnt = ImageFont.truetype("Pillow/Tests/fonts/FreeMono.ttf", font_size)
+        try:
+            fnt = ImageFont.truetype("FreeMono.ttf", font_size)
+        except OSError:
+            # No FreeMono on this system; PIL's built-in bitmap font always works,
+            # but ignores font_size.
+            fnt = ImageFont.load_default()
         draw.text(v_text, field_name, font=fnt, fill=text_color)
 
 

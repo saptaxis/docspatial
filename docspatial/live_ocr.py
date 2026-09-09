@@ -2,7 +2,7 @@
 import numpy as np
 import shapely
 
-from models import geometry, text_utils, utils
+from . import geometry, text
 
 
 def update_section_with_liveocr(
@@ -65,13 +65,13 @@ def get_text_section_inside_section(
     word_ids = [w.get("id") for w in words_inside]
     merged_section["word_ids"] = word_ids
 
-    text = merged_section["text"]
+    section_text = merged_section["text"]
 
-    # text = text_utils.remove_leading_punctuations_and_spaces(text)
-    text = text.strip()
-    text = text_utils.properly_space_text_with_punctuation(text)
+    # section_text = text.remove_leading_punctuations_and_spaces(section_text)
+    section_text = section_text.strip()
+    section_text = text.properly_space_text_with_punctuation(section_text)
 
-    merged_section["text"] = text
+    merged_section["text"] = section_text
     return merged_section
 
 
