@@ -98,6 +98,7 @@ on string position:
 | `text` | Number/ID detection, punctuation handling, fuzzy substring matching. |
 | `document` | `DocumentPage` / `Document`, carrying deskew → bound → normalise → query. |
 | `viz` | Draw sections and points on page images. |
+| `metrics` | Score extracted field values against ground truth. |
 | `adapters` | Optional Google Vision and Textract converters. Last verified 2024. |
 | `datatypes` | Date/number/address/name parsing. Optional extras. |
 
@@ -122,11 +123,11 @@ Tests need `pytest`:
 pytest
 ```
 
-112 tests covering the coordinate conversions, reading order, phrase search,
-deskew, bounding, the neighbour graph, and the Google Vision adapter. They also
-pin two limits: phrase search tolerates about five degrees of skew before it
-stops matching in place, and a line wrap is followed for two text heights down
-and two word widths left.
+137 tests covering the coordinate conversions, reading order, phrase search,
+deskew, bounding, the neighbour graph, the Google Vision adapter, and the
+extraction metrics. They also pin two limits: phrase search tolerates about five
+degrees of skew before it stops matching in place, and a line wrap is followed
+for two text heights down and two word widths left.
 
 ---
 

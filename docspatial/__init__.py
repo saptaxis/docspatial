@@ -34,6 +34,8 @@ merge_sections
     Spatial set operations over OCR, key-value and table sections.
 viz
     Draw sections and points on document images for debugging.
+metrics
+    Score extracted field values against ground truth.
 document
     DocumentPage / Document objects that carry the deskew -> bound ->
     normalize -> query sequence for you.
@@ -51,6 +53,7 @@ from . import (
     live_ocr,
     lookup_assets,
     merge_sections,
+    metrics,
     phrase_search,
     sections,
     text,
@@ -66,6 +69,7 @@ __all__ = [
     "live_ocr",
     "lookup_assets",
     "merge_sections",
+    "metrics",
     "phrase_search",
     "sections",
     "text",
