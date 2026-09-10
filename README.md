@@ -15,8 +15,8 @@ learned half stayed behind. What survives is the part that turned out to be
 durable, and the part you can read.
 
 **It is an artifact, not a library.** It is here to be read, argued with, and
-borrowed from. It is not packaged, not versioned, not tested, and not
-maintained. If you want something to depend on, see [Neighbours](#neighbours).
+borrowed from. It is not packaged, not versioned, and not maintained. If you
+want something to depend on, see [Neighbours](#neighbours).
 
 ---
 
@@ -115,6 +115,18 @@ pip install numpy shapely pillow opencv-python
 `nameparser` for `datatypes`; `nltk`, `thefuzz`, `sentence-transformers` for the
 fuzzy and embedding helpers in `text`. All are imported inside the functions
 that need them, so the core works without any of them.
+
+Tests need `pytest`:
+
+```
+pytest
+```
+
+112 tests covering the coordinate conversions, reading order, phrase search,
+deskew, bounding, the neighbour graph, and the Google Vision adapter. They also
+pin two limits: phrase search tolerates about five degrees of skew before it
+stops matching in place, and a line wrap is followed for two text heights down
+and two word widths left.
 
 ---
 
