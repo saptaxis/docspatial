@@ -2,9 +2,12 @@
 
 """Convert OCR engine output into the docspatial standard word format.
 
-Each adapter is optional and pulls its own engine SDK. The core library never
-imports these, so docspatial stays engine-agnostic: bring your own words, or
-use an adapter if you happen to use that engine.
+One function per engine, covering the word-extraction path only. Each takes a
+parsed response rather than fetching one, so neither needs credentials or a
+vendor SDK beyond what parsing requires.
 
-Both adapters were last verified against their APIs in 2024.
+The core library never imports these. Bring your own words, or use an adapter
+if you happen to use that engine.
+
+Both were last verified against their APIs in 2024.
 """
