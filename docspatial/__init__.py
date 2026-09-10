@@ -34,12 +34,18 @@ merge_sections
     Spatial set operations over OCR, key-value and table sections.
 viz
     Draw sections and points on document images for debugging.
+document
+    DocumentPage / Document objects that carry the deskew -> bound ->
+    normalize -> query sequence for you.
+adapters
+    Optional per-engine converters into the standard word format.
 datatypes
     Date/number/address/name parsing. Optional extras.
 """
 
 from . import (
     assets,
+    document,
     geometry,
     layout,
     live_ocr,
@@ -54,6 +60,7 @@ from . import (
 
 __all__ = [
     "assets",
+    "document",
     "geometry",
     "layout",
     "live_ocr",

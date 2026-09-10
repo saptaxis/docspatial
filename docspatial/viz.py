@@ -3,34 +3,8 @@ import PIL
 from PIL import Image, ImageDraw, ImageFont
 
 from . import geometry
-
-
-def get_chunks(items, chunk_size, pad_value=None):
-    """Split a list into fixed-size chunks, padding the last one."""
-    chunks = []
-    for start in range(0, len(items), chunk_size):
-        chunk = list(items[start : start + chunk_size])
-        chunk += [pad_value] * (chunk_size - len(chunk))
-        chunks.append(chunk)
-    return chunks
-
-
-def resize_image_keep_aspect(image, size):
-    """Resize to fit within size (width, height), letterboxed onto a black canvas."""
-    target_w, target_h = size
-
-    if isinstance(image, np.ndarray):
-        image = Image.fromarray(image)
-
-    source_w, source_h = image.size
-    scale = min(target_w / source_w, target_h / source_h)
-    new_size = (max(1, int(source_w * scale)), max(1, int(source_h * scale)))
-
-    resized = image.resize(new_size, Image.BILINEAR)
-
-    canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-    canvas.paste(resized, ((target_w - new_size[0]) // 2, (target_h - new_size[1]) // 2))
-    return np.array(canvas)
+from .image_utils import resize_image_keep_aspect
+from .utils import get_chunks
 
 
 def visualize_images_in_grid(

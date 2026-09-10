@@ -18,14 +18,12 @@ import copy
 import itertools
 import math
 
+import cv2
 import numpy as np
 import shapely
+from PIL import Image
 
 from . import utils
-
-# cv2 and PIL are only needed by the image-space helpers (rotation, cropping).
-# They are imported inside those functions so that the coordinate geometry —
-# which is the bulk of this module — works with numpy and shapely alone.
 
 
 def get_box_iou(rect1, rect2):
@@ -136,7 +134,50 @@ def get_centroid(quad):
     return centroid
 
 
-def prepare_words(words):
+def refresh_derived_fields(section):
+    """Recompute the quad-derived fields a section already carries, in place.
+
+    Any operation that moves a quad — rotating, affine transforming — makes
+    everything derived from that quad wrong. Leaving the old values behind
+    fails quietly and badly: a stale ``rotation_angle`` makes a deskew look
+    like it ran while changing nothing.
+
+    Only keys already present are refreshed, so a section's shape does not
+    change; sections that never carried ``rect`` do not acquire one.
+
+    Normalized fields are dropped rather than refreshed. They depend on the
+    page dimensions, which a transform does not know, and which a rotation or
+    a crop changes — absent is better than wrong. Re-run
+    normalize_coordinates_in_sections afterwards to restore them.
+    """
+    quad = section.get("quad")
+    if not quad:
+        return section
+
+    rect = quad_std_to_rect_std(quad)
+
+    if "rect" in section:
+        section["rect"] = rect
+    if "centroid" in section:
+        section["centroid"] = get_centroid(quad)
+    if "vertices" in section:
+        section["vertices"] = quad_std_to_quad_points_list(quad)
+    if "height" in section:
+        section["height"] = rect[3] - rect[1]
+    if "width" in section:
+        section["width"] = rect[2] - rect[0]
+    if "font_height" in section:
+        section["font_height"] = rect[3] - rect[1]
+    if "rotation_angle" in section:
+        section["rotation_angle"] = calculate_rotation_angle(quad[0], quad[1])
+
+    for norm_key in [k for k in section if k.startswith("norm_")]:
+        section.pop(norm_key)
+
+    return section
+
+
+def prepare_words(words, recompute=False):
     """Derive the fields the spatial functions expect from bare word quads.
 
     Input words need only ``text`` and ``quad`` — the format any OCR engine can
@@ -152,6 +193,10 @@ def prepare_words(words):
     Anything already present is left alone, so words from an engine that
     reports its own angle or confidence keep those values.
 
+    Pass ``recompute=True`` after the quads have moved — rotating or
+    transforming sections rewrites ``quad`` but leaves the derived fields
+    behind, and a stale ``rotation_angle`` will silently defeat a deskew.
+
     Returns new dicts; the input list is not modified.
     """
     prepared = []
@@ -162,6 +207,12 @@ def prepare_words(words):
         rect = quad_std_to_rect_std(quad)
         w["rect"] = rect
         w["centroid"] = get_centroid(quad)
+
+        if recompute:
+            # everything below is a function of the quad, so a moved quad
+            # invalidates all of it
+            for stale_key in ("height", "width", "font_height", "rotation_angle"):
+                w.pop(stale_key, None)
 
         w.setdefault("id", idx)
         w.setdefault("height", rect[3] - rect[1])
@@ -288,8 +339,6 @@ def scale_section(section, image_size, x_scale_factor=1.0, y_scale_factor=1.0):
 
 
 def crop_section_from_image(image, section):
-    from PIL import Image
-
     left, top, right, bottom = quad_std_to_rect_std(section["quad"])
 
     pil_img = False
@@ -408,6 +457,7 @@ def affine_transform_sections(sections, M):
         tr_section["vertices"] = tr_all_sections_points[idx]
         tr_section["quad"] = quad_points_list_to_quad_std(tr_all_sections_points[idx])
         tr_section["centroid"] = tr_all_sections_centroid[idx]
+        refresh_derived_fields(tr_section)
         transformed_sections.append(tr_section)
     return transformed_sections
 
@@ -555,31 +605,12 @@ def get_polygon_iou(poly1, poly2) -> float:
     return iou_score
 
 
-def _rotation_matrix_2d(center, angle, scale=1.0):
-    """The 2x3 affine matrix that cv2.getRotationMatrix2D returns.
-
-    Angle in degrees, positive counter-clockwise, in image coordinates (y
-    increasing downward). Written out in numpy so that rotating *coordinates*
-    needs no opencv — only rotating *pixels* does.
-    """
-    center_x, center_y = center
-    angle_rad = np.deg2rad(angle)
-    alpha = scale * np.cos(angle_rad)
-    beta = scale * np.sin(angle_rad)
-    return np.array(
-        [
-            [alpha, beta, (1 - alpha) * center_x - beta * center_y],
-            [-beta, alpha, beta * center_x + (1 - alpha) * center_y],
-        ]
-    )
-
-
 def _get_rotation_matrix_preserve_image(angle, width, height):
     angle_rad = np.deg2rad(angle)
     final_w = int((height * abs(np.sin(angle_rad))) + (width * abs(np.cos(angle_rad))))
     final_h = int((height * abs(np.cos(angle_rad))) + (width * abs(np.sin(angle_rad))))
 
-    M = _rotation_matrix_2d((width // 2, height // 2), angle, 1)
+    M = cv2.getRotationMatrix2D((width // 2, height // 2), angle, 1)
     M[0, 2] += (final_w / 2) - width // 2
     M[1, 2] += (final_h / 2) - height // 2
     return M, final_w, final_h
@@ -587,8 +618,6 @@ def _get_rotation_matrix_preserve_image(angle, width, height):
 
 def rotate_image(img, angle):
     """Rotate an image, preserving full view of the image"""
-    import cv2
-    from PIL import Image
 
     is_np_img = True
     if not isinstance(img, np.ndarray):
@@ -623,9 +652,9 @@ def rotate_points_on_image(quad, angle, image_size):
 
     M, final_w, final_h = _get_rotation_matrix_preserve_image(angle, w, h)
 
-    points = np.array([[ii["x"], ii["y"]] for ii in quad], dtype=float)
-    points_homogeneous = np.hstack([points, np.ones((len(points), 1))])
-    rot_points = points_homogeneous @ M.T
+    points = np.array([[ii["x"], ii["y"]] for ii in quad])
+    points = np.expand_dims(points, axis=0)
+    rot_points = cv2.transform(points, M).squeeze()
     rot_quad = [{"x": int(ii[0]), "y": int(ii[1])} for ii in rot_points]
     return rot_quad
 
@@ -651,6 +680,7 @@ def rotate_sections_on_image(sections, angle, image_size, other_quad_keys_to_rot
                 rotated_section[other_key] = rotate_points_on_image(
                     section[other_key], angle, image_size
                 )
+        refresh_derived_fields(rotated_section)
         rotated_sections.append(rotated_section)
     return rotated_sections
 
