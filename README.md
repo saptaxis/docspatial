@@ -1,87 +1,136 @@
 # docspatial
 
-Heuristic spatial reasoning on document OCR output.
+Reconstructing document layout from the geometry of character and word bounding
+boxes, rather than from a model.
 
-`docspatial` is the layer between "I have OCR words" and "I need structured extractions." It provides composable utilities for spatial queries, phrase finding, and layout reasoning on word-level OCR output — from any OCR engine.
+Reading order, line and paragraph reconstruction, text size, rotation
+normalisation, "the value to the right of this label", whether a phrase
+continues onto the next line — all derived from where the boxes are, with no
+training and no inference.
 
-No models. No training. No cloud APIs. Just deterministic spatial logic.
+This is the geometric half of a document-understanding system built for
+commercial invoice and form processing between roughly 2022 and 2024. In the
+original the geometry ran alongside learned models and a hybrid shipped. The
+learned half stayed behind. What survives is the part that turned out to be
+durable, and the part you can read.
 
-## Why
+**It is an artifact, not a library.** It is here to be read, argued with, and
+borrowed from. It is not packaged, not versioned, not tested, and not
+maintained. If you want something to depend on, see [Neighbours](#neighbours).
 
-Document processing is dominated by end-to-end models and cloud APIs. But a huge class of practical extraction tasks just needs spatial reasoning over already-extracted words: find a phrase split across lines, get the value to the right of a label, identify the closest field in a direction.
+---
 
-Everyone reimplements this ad-hoc. This library packages those patterns.
+## The idea
 
-LLMs are powerful for document understanding, but they hallucinate coordinates, cost money at volume, and can't replace deterministic geometric operations when you need them.
+A page is words at coordinates. Almost everything people want from a document —
+which text is a heading, what reads before what, which value belongs to which
+label, where a table cell sits — is recoverable from the arrangement alone.
+
+The interesting consequence is that these operations are *checkable*. A model
+asked for a bounding box can return a plausible, wrong one. A median of word
+heights cannot: it is either the median or it is a bug, and you can assert it in
+a test. When the task is spatial and you need the answer to be grounded, the
+substrate matters.
+
+Article: [The Layer That Document Systems Keep Rebuilding](https://saptaxis.dev/articles/document-systems-rebuild-spatial-layer/).
+This repository is the working sketch behind it.
+
+---
+
+## What it looks like
+
+Bring words from any OCR engine as `text` plus a four-point `quad`.
+`prepare_words` derives the rest — bounding rect, centroid, reading-order id,
+text height, and the rotation angle of each word from the slope of its top edge.
+
+```python
+from docspatial import geometry, layout, phrase_search, sections
+
+def word(text, l, t, r, b):
+    return {"text": text, "quad": geometry.rect_std_to_quad_std([l, t, r, b])}
+
+page = [
+    word("Invoice", 10, 10, 90, 30),  word("Number", 100, 10, 190, 30),  word("INV2024A", 200, 10, 320, 30),
+    word("Total",   10, 60, 70, 80),  word("Amount",  80, 60, 170, 80),  word("1,23,456.78", 180, 60, 320, 80),
+    word("Invoice", 10, 110, 90, 130), word("Date",   100, 110, 160, 130),
+]
+words = geometry.prepare_words(page)
+```
+
+Label to value — the workhorse:
+
+```python
+>>> layout.get_next_word_after_phrase("Invoice Number", words)["raw_text"]
+'INV2024A'
+
+>>> layout.get_next_word_after_phrase("Total Amount", words, numbers=True)["raw_text"]
+'1,23,456.78'
+```
+
+Lines are reconstructed from words by vertical band, not taken from the engine:
+
+```python
+>>> [l["text"] for l in sections.extract_lines_from_ocr(words)]
+['Invoice Number INV2024A', 'Total Amount 1,23,456.78', 'Invoice Date']
+```
+
+Note that `Invoice` appears twice on this page. Phrase search picks the right
+one, because it scores candidate word sequences on spatial coherence rather than
+on string position:
+
+```python
+>>> phrase_search.find_phrase("Invoice Number", words)["word_ids"]
+[0, 1]
+```
+
+---
 
 ## Modules
 
 | Module | What it does |
-|--------|-------------|
-| **geometry** | Coordinate conversions (quad/rect/points), merging, IoU, rotation, affine transforms, normalization |
-| **phrase_search** | Find text phrases in OCR word output with spatial coherence, handling duplicates, rotation, multi-line |
-| **layout** | Directional filtering, closest-section queries, anchor-based extraction, words-after-phrase |
-| **sections** | Line reconstruction from words, visual section merging, sentence merging, directional neighbor graphs |
-| **text** | Number/ID detection, punctuation utilities, fuzzy substring matching |
-| **viz** | Draw sections and points on document images for debugging |
-| **datatypes** *(optional)* | Date/number/address/name parsing and normalization |
+|---|---|
+| `geometry` | Coordinate conversions, merging, IoU, rotation, affine transforms, normalisation, reading order. Also `prepare_words`. |
+| `phrase_search` | Find a phrase in OCR words with spatial coherence — duplicates, line wrapping, consistent text angle. |
+| `layout` | Directional filtering, closest-section queries, anchor-based extraction, label-to-value. |
+| `sections` | Line reconstruction, visual and sentence-based section merging, directional neighbour graphs. |
+| `live_ocr` | Text inside a region; watermark filtering by rotation consistency. |
+| `merge_sections` | Spatial set operations across OCR, key-value and table sections. |
+| `text` | Number/ID detection, punctuation handling, fuzzy substring matching. |
+| `document` | `DocumentPage` / `Document`, carrying deskew → bound → normalise → query. |
+| `viz` | Draw sections and points on page images. |
+| `adapters` | Optional Google Vision and Textract converters. Last verified 2024. |
+| `datatypes` | Date/number/address/name parsing. Optional extras. |
 
-## Input Format
+---
 
-The library operates on a simple, universal input — a list of word dicts:
+## Running it
 
-```python
-words = [
-    {
-        "text": "Invoice",
-        "quad": [
-            {"x": 100, "y": 50},   # top-left
-            {"x": 200, "y": 50},   # top-right
-            {"x": 200, "y": 80},   # bottom-right
-            {"x": 100, "y": 80},   # bottom-left
-        ],
-        # optional:
-        "confidence": 0.98,
-        "rotation_angle": 0.0,
-    },
-    ...
-]
+Not packaged. Clone it and work in the directory.
+
+```
+pip install numpy shapely pillow opencv-python
 ```
 
-Bring your own words from Google Vision, Textract, Tesseract, PaddleOCR, Surya, or anything else.
+`scikit-learn` for the visual section merge; `dateparser`, `usaddress`,
+`nameparser` for `datatypes`; `nltk`, `thefuzz`, `sentence-transformers` for the
+fuzzy and embedding helpers in `text`. All are imported inside the functions
+that need them, so the core works without any of them.
 
-## How This Fits In
+---
 
-| Library | What it does | Gap |
-|---------|-------------|-----|
-| `pdfplumber` | PDF text extraction with spatial methods | PDF-only, no rotated/scanned doc support |
-| `layoutparser` | ML-based layout detection | Requires models, heavy |
-| `docTR` | End-to-end OCR | Is the OCR engine itself, not post-processing |
-| `paddleocr` | OCR engine + some layout | Engine-specific, not composable |
-| `surya` | OCR + layout + reading order | Engine-specific, model-dependent |
-| **docspatial** | Spatial queries on OCR words | Engine-agnostic, lightweight, heuristic |
+## Neighbours
 
-`docspatial` is not an alternative to these — it's the layer that comes after them. Run your OCR engine of choice, then use `docspatial` to reason over the output.
+Prior art and better-maintained work in the same area:
 
-## Status
+[`pdfplumber`](https://github.com/jsvine/pdfplumber) for spatial extraction from
+born-digital PDFs · [`layoutparser`](https://github.com/Layout-Parser/layout-parser)
+for model-based layout detection · [`docTR`](https://github.com/mindee/doctr)
+and [`PaddleOCR`](https://github.com/PaddlePaddle/PaddleOCR) as OCR engines with
+layout output · [`surya`](https://github.com/VikParuchuri/surya) for OCR, layout
+and reading order · [`marker`](https://github.com/VikParuchuri/marker) for
+document conversion.
 
-**Work in progress.** Source files have been moved in from a private codebase. Still needs:
-
-- [ ] Clean up imports and internal dependencies
-- [ ] Remove provider-specific coupling (Google OCR pickle format, etc.)
-- [ ] Replace heavy dependencies (torch/torchvision) with lightweight alternatives
-- [ ] Consistent API surface across modules
-- [ ] Tests
-- [ ] PyPI packaging
-- [ ] Documentation and examples
-
-## Dependencies
-
-Core: `numpy`, `shapely`
-
-Optional: `opencv-python` (visual section merging, image rotation), `Pillow` (visualization)
-
-Optional extras: `dateparser`, `usaddress`, `nameparser` (datatypes module)
+If you need something supported, use one of those.
 
 ## License
 
